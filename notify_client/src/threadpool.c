@@ -7,7 +7,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sys/syscall.h>
-#include "notify_init_common.h"
+#include "notify_client_common.h"
 
 /*
 int pthread_mutex_init(pthread_mutex_t * mutex ,pthread_mutexattr_t * attr);
@@ -80,7 +80,7 @@ static void *ProcessProgram(void *UNUSED(arg))
         free(work);
         work = NULL;
     }
-    // THREAD_LOG_INFO("task [%d] exit", (int)pthread_self());
+    // THREAD_LOG_INFO("task [%u] exit", (unsigend int)pthread_self());
     return NULL;
 }
 
@@ -113,7 +113,7 @@ void DestroyThreadPool(void)
         } else {
             retry++;
             usleep(KILL_PRHREAD_RETRY_SLEEP_TIME); // 50ms重试
-            THREAD_LOG_ERROR("pthread_kill tid [%u] faild retry %d", (unsigned int)g_threadPool->threadId[i], retry);
+            THREAD_LOG_ERROR("pthread_kill tid [%u] faild retry %d", (unsigned int)g_threadPool->threadId[index], retry);
         }
     }
     if (retry >= KILL_PRHREAD_RETRY_MAX_TIMES) {
@@ -203,4 +203,12 @@ int AddTaskInThreadPool(void (*func)(void *arg), void *arg)
     pthread_mutex_unlock(&g_threadPool->queueLock);
     pthread_cond_signal(&g_threadPool->wait);
     return 0;
+}
+
+bool IsThreadPoolInit(void)
+{
+    if (g_threadRun == 0 || g_threadPool == NULL) {
+        return false;
+    }
+    return true;
 }

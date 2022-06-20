@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "threadpool.h": "c",
+        "notify_common.h": "c",
+        "notify_client_common.h": "c"
+    }
+}
