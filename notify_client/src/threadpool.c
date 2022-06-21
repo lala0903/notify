@@ -52,7 +52,7 @@ struct ThreadPool {
     int maxPoolSize;
     pthread_t *threadId;
     pthread_mutex_t queueLock;
-    pthread_cond_t wait; 
+    pthread_cond_t wait;
     struct ThreadWork *queueHead;
     int off;
     int taskCnt;

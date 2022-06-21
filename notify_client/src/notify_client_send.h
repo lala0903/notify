@@ -3,14 +3,20 @@
 
 #include "notify_common.h"
 
+#define SYNC_TYPE 0
+#define ASYNC_TYPE 1
+
 typedef enum{
+    ASNYC_MSG,
+    SNYC_MSG,
     REG_MSG,
     ACK_MSG,
-    ACK_ERR,
 } MsgType;
 
 typedef enum{
-    
+    NO_ACK,
+    ACK_OK,
+    ACK_ERR,
 } MsgAskType;
 
 struct SendMsgFrame {
@@ -27,10 +33,10 @@ struct SendMsgFrame {
 struct MsgHeadInfo {
     unsigned int seqNum;
     unsigned int sourceId;
-    unsigned int msgTypeValue;
+    unsigned int msgType;
     unsigned int destId;
     unsigned int event;
-    bool syncType;
+    unsigned int syncType;
     MsgAskType ackType;
     unsigned int totalLen;
     unsigned int par1Len;
@@ -39,12 +45,23 @@ struct MsgHeadInfo {
     int retValue;
 };
 
-typedef int (*RegisterSyncFunc)(NotifyEvent event, const void *input, int inLen, void *output, int outLen);
-typedef int (*RegisterAsyncFunc)(NotifyEvent event, const void *par1, int par1Len, const void *par2, int par2Len);
+#define INIT_SEND_MSG_FRAME(Msg, msgType, destId, event, par1, par1Len, par2, par2Len, retValue) \
+ do { \
+    Msg.msgType = msgType; \
+    Msg.destModuleId = destId; \
+    Msg.event = event;  \
+    Msg.par1 = par1;    \
+    Msg.par1Len = par1Len;  \
+    Msg.par2 = par2;    \
+    Msg.par2Len = par2Len;  \
+    Msg.retValue = retValue;    \
+ } while (0)
+ 
+typedef int (*RegisterSyncFunc)(NotifyEvent event, const void *input, unsigned int inLen, void *output, unsigned int outLen);
+typedef int (*RegisterAsyncFunc)(NotifyEvent event, const void *par1, unsigned int par1Len, const void *par2, unsigned int par2Len);
 
-int RegisterNotifyFunction(NotifyModuleId moduleId, RegisterAsyncFunc asyncFunc, RegisterSyncFunc syncFunc);
-int UnregisterNotifyFunction(NotifyModuleId moduleId);
-int SendNotify(NotifyModuleId moduleId, NotifyEvent event, const void *input, int inLen, void *output, int outLen);
-int PostNotify(NotifyModuleId moduleId, NotifyEvent event, const void *par1, int par1Len, const void *par2, int par2Len);
-
+RegisterAsyncFunc GetAsyncFunc(NotifyModuleId moduleId);
+RegisterAsyncFunc GetSyncFunc(NotifyModuleId moduleId);
+int SendMsgToServer(struct MsgHeadInfo *head, unsigned int sequenceNum);
+void NotifyClientSendInit(void);
 #endif // !__NOTIFY_CLIENT_SEND_H__

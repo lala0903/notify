@@ -10,6 +10,7 @@
    
 static int g_IsNotifyServerInit = 0;
 static int g_socketFd = -1;
+static int g_moudleId[MODULE_ID_MAX] = {0};
 
 static void CloseServerSocket(void)
 {
@@ -50,44 +51,25 @@ static int CreateServerSocket(void)
 
 int main(void)  
 {      
-    int ret;     
-    int len;  
-    int accept_fd;
-    int g_socketFd; 
-    static char recv_buf[1024];
-    socklen_t clt_addr_len; 
-    struct sockaddr_un clt_addr;  
-    struct sockaddr_un srv_addr;  
-    if (CreateServerSocket() < 0) {
-        NOTIFY_LOG_ERROR("Create Client Socket failed");
-        return -1;
-    }
+    struct sockaddr_un clientAddr;  
     // 监听   
-    ret=listen(g_socketFd,1);  
-    if(ret==-1)  
-    {  
+    if(listen(g_socketFd,1) < 0) {  
         perror("cannot listen the client connect request");  
         close(g_socketFd);  
         unlink(CAN_SERVICE);  
         return 1;  
-    }  
- 
-    // 接受connect请求 
-    len=sizeof(clt_addr);  
-    accept_fd=accept(g_socketFd,(struct sockaddr*)&clt_addr,&len);  
-    if(accept_fd<0)  
-    {  
-        perror("cannot accept client connect request");  
-        close(g_socketFd);  
-        unlink(CAN_SERVICE);  
-        return 1;  
-    }  
- 
-    // 读取和写入  
-    memset(recv_buf,0,1024);  
-    int num=read(accept_fd,recv_buf,sizeof(recv_buf));  
-    printf("Message from client (%d)) :%s\n",num,recv_buf);    
-         
+    }
+    while (1) {
+        int len = sizeof(clientAddr);  
+        int fd = accept(g_socketFd,(struct sockaddr*)&clientAddr, &len);
+        if (fd < 0) {  
+
+        } else {
+            
+        }
+        
+    }
+
     // 关闭socket
     close(accept_fd);  
     close(g_socketFd);  
