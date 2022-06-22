@@ -5,13 +5,14 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
+#include <pthread.h>
 
 struct NotifyAckList {
     struct NotifyAckNode *head;
-    struct NotifyAckNode *rail;
     unsigned int cnt;
 };
 
+static pthread_mutex_t g_ackListLock;
 static struct NotifyAckList *g_ackList = NULL;
 
 int NotifyAckLisitInit(void)
@@ -21,8 +22,8 @@ int NotifyAckLisitInit(void)
         return -1;
     }
     g_ackList->head = NULL;
-    g_ackList->rail = NULL;
     g_ackList->cnt = 0;
+    pthread_mutex_init(&g_ackListLock, NULL);
     return 0;
 }
 
@@ -31,28 +32,125 @@ void NotifyAckLisitDestroy(void)
     if (g_ackList == NULL) {
         return;
     }
-    struct NotifyAckNode *temp = g_ackList->head;
-    while (temp != NULL) {
-
+    pthread_mutex_lock(&g_ackListLock);
+    while (g_ackList->head != NULL) {
+        struct NotifyAckNode *temp = g_ackList->head;
+        g_ackList->head = g_ackList->head->next;
+        free(temp);
     }
-    g_ackList->head = NULL;
-    g_ackList->rail = NULL;
     g_ackList->cnt = 0;
+    free(g_ackList);
+    pthread_mutex_unlock(&g_ackListLock);
+    pthread_mutex_destroy(&g_ackListLock);
+    return;
+}
+
+struct NotifyAckNode *CreateAckNote(unsigned int seqNum, void *buff, unsigned int len, int retValue)
+{
+    struct NotifyAckNode *node = (struct NotifyAckNode *)malloc(sizeof(struct NotifyAckNode));
+    if (node == NULL) {
+        return NULL;
+    }
+    if (len == 0 || buff == NULL) {
+        node->buff = NULL;
+        node->len = 0;
+    } else {
+        node->len = len;
+        node->buff = malloc(len);
+        if (node->buff == NULL) {
+            free(node);
+            return NULL;
+        }
+        memcpy(node->buff, buff, len);
+    }
+    node->next = NULL;
+    node->seqNum = seqNum;
+    node->retValue = retValue;
+    return node;
+}
+
+int InsertNodeInAckList(struct NotifyAckNode *node)
+{
+    if (node == NULL) {
+        return -1;
+    }
+    pthread_mutex_lock(&g_ackListLock);
+    if (g_ackList->head == NULL) {
+        g_ackList->head = node;
+    } else {
+        node->next = g_ackList->head;
+        g_ackList->head = node;
+    }
+    g_ackList->cnt++;
+    pthread_mutex_unlock(&g_ackListLock);
     return 0;
 }
 
-struct NotifyAckNode *CreateAckNote(void)
+int IsNodeExistAckList(unsigned int seqNum)
 {
-    struct NotifyAckNode *temp = (struct NotifyAckNode *)malloc(sizeof(struct NotifyAckNode));
-    if (temp == NULL) {
-        return NULL;
+    pthread_mutex_lock(&g_ackListLock);
+    struct NotifyAckNode *temp = g_ackList->head;
+    while (temp != NULL) {
+        if (temp->seqNum == seqNum) {
+            break;
+        }
+        temp = temp->next;
     }
-    temp->next = NULL;
-    temp->buff = NULL;
-    temp->seqNum = 0;
-    temp->retValue = 0;
-    temp->len = 0;
-    return temp;
+    pthread_mutex_unlock(&g_ackListLock);
+    if (temp == NULL) {
+        return -1;
+    }
+    return 0;
 }
 
-int 
+void RemoveNodeFromAckList(unsigned int seqNum)
+{
+    pthread_mutex_lock(&g_ackListLock);
+    struct NotifyAckNode *node = g_ackList->head;
+    if (node == NULL) {
+        return;
+    }
+    if (node->seqNum == seqNum) {
+        g_ackList->head = g_ackList->head->next;
+        g_ackList->cnt--;
+        pthread_mutex_unlock(&g_ackListLock);
+        free(node->buff);
+        free(node);
+    }
+    while (node->next != NULL) {
+        if (node->next->seqNum != seqNum) {
+            node = node->next;
+            continue;
+        }
+        struct NotifyAckNode *temp = node->next;
+        node->next = node->next->next;
+        free(temp->buff);
+        free(temp);
+        g_ackList->cnt--;
+        pthread_mutex_unlock(&g_ackListLock);
+        break;
+    }
+    return;
+}
+
+void GetDataFromeAckList(unsigned int seqNum, void *buff, unsigned int len, int *retValue)
+{
+    pthread_mutex_lock(&g_ackListLock);
+    struct NotifyAckNode *temp = g_ackList->head;
+    while (temp != NULL) {
+        if (temp->seqNum == seqNum) {
+            if (len != temp->len) {
+                pthread_mutex_unlock(&g_ackListLock);
+                return;
+            }
+            *retValue = temp->retValue;
+            if (len != 0 && buff != NULL) {
+                memcpy(buff, temp->buff, len);
+            }
+            break;
+        }
+        temp = temp->next;
+    }
+    pthread_mutex_unlock(&g_ackListLock);
+    return;
+}

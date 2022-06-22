@@ -21,13 +21,22 @@ typedef enum{
 
 struct SendMsgFrame {
     unsigned int msgType;
-    unsigned int destModuleId;
+    unsigned int destId;
     unsigned int event;
     void *par1;
     unsigned int par1Len;
     void *par2;
     unsigned int par2Len;
     int retValue;
+};
+
+struct AsyncMsgHead {
+    unsigned int destId;
+    unsigned int event;
+    void *par1;
+    unsigned int par1Len;
+    void *par2;
+    unsigned int par2Len;
 };
 
 struct MsgHeadInfo {
@@ -48,7 +57,7 @@ struct MsgHeadInfo {
 #define INIT_SEND_MSG_FRAME(Msg, msgType, destId, event, par1, par1Len, par2, par2Len, retValue) \
  do { \
     Msg.msgType = msgType; \
-    Msg.destModuleId = destId; \
+    Msg.destId = destId; \
     Msg.event = event;  \
     Msg.par1 = par1;    \
     Msg.par1Len = par1Len;  \
@@ -62,6 +71,10 @@ typedef int (*RegisterAsyncFunc)(NotifyEvent event, const void *par1, unsigned i
 
 RegisterAsyncFunc GetAsyncFunc(NotifyModuleId moduleId);
 RegisterAsyncFunc GetSyncFunc(NotifyModuleId moduleId);
-int SendMsgToServer(struct MsgHeadInfo *head, unsigned int sequenceNum);
-void NotifyClientSendInit(void);
+int SendMsgToServer(struct MsgHeadInfo *head, unsigned int seqNum);
+void WakeupDataWaite(void);
+void DataLock(void);
+void DataUnlock(void);
+void ClearDestModuleIdValue(NotifyModuleId moduleId);
+
 #endif // !__NOTIFY_CLIENT_SEND_H__

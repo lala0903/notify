@@ -79,7 +79,6 @@ int NotifyInit(void)
     if (g_IsNotifyClientInit == 1) {
         return -1;
     }
-    NotifyClientSendInit();
     if (ConnectNotifyServer() < 0) {
         NOTIFY_LOG_ERROR("Create Client Socket failed");
         return -1;
@@ -105,7 +104,9 @@ void NotifyDestroy(void)
     if (g_IsNotifyClientInit == 0) {
         return -1;
     }
-
+    CloseClientSocket();
+    NotifyAckLisitDestroy();
+    DestroyThreadPool();
     NOTIFY_LOG_INFO("destroy success");  
     g_IsNotifyClientInit = 0;
     return 0;

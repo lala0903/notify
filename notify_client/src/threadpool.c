@@ -180,7 +180,7 @@ int AddTaskInThreadPool(void (*func)(void *arg), void *arg)
         THREAD_LOG_ERROR("parameter invaild");
         return -1;
     }
-    pthread_mutex_unlock(&g_threadPool->queueLock);
+    pthread_mutex_lock(&g_threadPool->queueLock);
     if (g_threadPool->taskCnt > TASK_MAX_CNT) {
         THREAD_LOG_ERROR("had too many task wait to process cant not push new");
         pthread_mutex_unlock(&g_threadPool->queueLock);

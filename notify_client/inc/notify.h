@@ -1,5 +1,3 @@
-
-
 #ifndef __NOTIFY_H__
 #define __NOTIFY_H__
 

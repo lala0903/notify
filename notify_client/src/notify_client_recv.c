@@ -10,11 +10,12 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include "threadpool.h"
-#include "notify_init_send.h"
+#include "notify_client_list.h"
+#include "notify_client_ack_list.h"
+#include "notify_client_send.h"
 #include "notify_client_common.h"
 
 #define ONCE_READ_SIZE 1024
-#define IS_MODULEID_INVAILD(moduleId) (moduleId <= NOTIFY_SERVER_EVENT_START || moduleId >= MODULE_ID_MAX)
 
 static int g_recvThreadRun = 0;
 
@@ -107,11 +108,14 @@ static void *AsyncMsgHandle(void *arg)
             char *buff2 = head->par2Len == 0 ? NULL : (void *)(head + 1) + head->par1Len;
             (void)proc(head->event, buff1, head->par1Len, buff2, head->par2Len);
         } else if (head->ackType == ACK_ERR) {
-            
+            /* 如果服务器未找到目标模块，则需要通知退出阻塞的同步发送业务 */
+            DataLock();
+            ClearDestModuleIdValue(head->sourceId);
+            WakeupDataWaite();
+            DataUnlock();
         }
     } while (0);
     free(head);
-    head = NULL;
     return NULL;
 }
 
@@ -147,21 +151,19 @@ static void *SyncMsgHandle(void *arg)
     } while (0);
     struct SendMsgFrame msg;
     INIT_SEND_MSG_FRAME(msg, ACK_MSG, head->sourceId, 0, buff1, inLen, buff2, outLen, retValue);
-    (void)SendMsgToServer(&msg, GetSequenceNum());
+    (void)SendMsgToServer(&msg, head->seqNum);
     free(head);
-    head = NULL;
     return NULL;
 }
 
 static void *AckMsgHandle(void *arg)
 {
-    /*
-        HandleAckMsg{
-            save ackmsg
-            wake waitackfunc
-        } 
-    */
     struct MsgHeadInfo *head = (struct MsgHeadInfo *)arg;
+    void *buff = head + 1;
+    struct NotifyAckNode *node = CreateAckNote(head->seqNum, buff, head->outLen,
+                                               head->retValue);
+    InsertNodeInAckList(node);
+    WakeupDataWaite();
     free(head);
     return NULL;
 }
@@ -215,4 +217,9 @@ int CreateRecvThread(void)
         return -1;
     }
     return 0;
+}
+
+void DestoryRecvThread(void)
+{
+    g_recvThreadRun = 0;
 }
