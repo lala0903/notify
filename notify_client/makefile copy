@@ -1,6 +1,6 @@
 #CROSS_COMPILE ?= arm-linux-gnueabihf-
 CROSS_COMPILE =
-TARGET ?= key
+TARGET ?= notiyclient
 
 CC := $(CROSS_COMPILE)gcc
 LD := $(CROSS_COMPILE)ld
@@ -18,18 +18,25 @@ SOURCE	:= src/threadpool.c \
 
 CFLAGS := -shared -fIPC -g -O2
 
-
 CFILES := $(wildcard *.c src/*.c)
 CFILENDIR := $(notdir  $(CFILES))
-COBJS := $(patsubst %, obj/%, $(CFILENDIR:.c=.o))
-OBJS := $(SOBJS) $(COBJS)
-.PHONY: clean
-$(TARGET).bin : $(OBJS)
-    $(LD) -Timx6ul.lds -o $(TARGET).elf $^
-    $(OBJCOPY) -O binary -S $(TARGET).elf $@
-    $(OBJDUMP) -D -m arm $(TARGET).elf > $(TARGET).dis
-$(COBJS) : obj/%.o : %.c
+OBJS := $(patsubst %, obj/%, $(CFILENDIR:.c=.o))
+
+.PHONY: all clean print
+print:
+	@echo "INCLUDE $(INCLUDE)"
+	@echo "CFLAGS $(CFLAGS)"
+	@echo "all:$(OBJS)"
+	@echo "$(CC) $(CFLAGS) $(OBJS) -o $(TARGET)"
+	@echo "$(OBJS):$(SOURCE)"
+	@echo "$(CC) -c $(CFLAGS) $(INCLUDE) -o $@ $<"
+print:
+	@echo $(OBJS)
+
+all:$(OBJS)
+	$(CC) $(CFLAGS) $(OBJS) -o $(TARGET)
+$(OBJS): obj/%.o : %.c
     $(CC) -c $(CFLAGS) $(INCLUDE) -o $@ $<
 #    $(CC) -Wall -nostdlib -c -O2  $(INCLUDE) -o $@ $<
 clean:
-	rm -rf $(COBJS)
+	rm -rf $(OBJS)

@@ -4,21 +4,28 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
+#include <limits.h>
+#include <pthread.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include "threadpool.h"
-#include "notify_client_list.h"
 #include "notify_client_ack_list.h"
 #include "notify_client_send.h"
+#include "notify_client_init.h"
 #include "notify_client_common.h"
 
 #define ONCE_READ_SIZE 1024
 
 static int g_recvThreadRun = 0;
 
+/* 
+    read返回0，对方正常调用close关闭链接
+    read返回-1，需要通过errno来判断，如果不是EAGAIN和EINTR，那么就是对方异常断开链接
+    两种情况服务端都要close套接字
+*/
 static int RecvMsgFromServer(void *buff, size_t len)
 {
     size_t totalLen = 0;
@@ -26,10 +33,15 @@ static int RecvMsgFromServer(void *buff, size_t len)
         size_t readLen = len - totalLen >= ONCE_READ_SIZE ? ONCE_READ_SIZE : len - totalLen;
         ssize_t ret = recv(GetClientSocket(), buff + totalLen, readLen, 0);
         if (ret < 0) {
+            if (errno == EAGAIN || errno == EINTR) {
+                NOTIFY_LOG_WARN("get signal EAGAIN || EINTR %d", (int)errno);
+                continue;
+            }
             NOTIFY_LOG_ERROR("read message faild ret %d", (int)errno);
             return -1;
         } else if (ret == 0) {
-            
+            NOTIFY_LOG_WARN("read message ret %d", (int)ret);
+            return -1;
         } else {
             totalLen += ret;
         }
@@ -68,12 +80,12 @@ static struct MsgHeadInfo *RecvMsg(void)
     int bodyLen = head.totalLen;
     if (bodyLen < 0 || bodyLen > INT_MAX + sizeof(struct MsgHeadInfo) + 1) {
         NOTIFY_LOG_ERROR("bodyLen is invalid %d", bodyLen);
-        return -1;
+        return NULL;
     }
     char *buff = (char *)malloc(bodyLen + sizeof(struct MsgHeadInfo));
     if (buff == NULL) {
         NOTIFY_LOG_ERROR("malloc faild ret %d", (int)errno);
-        return -1;
+        return NULL;
     }
     memcpy((void *)buff, (void *)&head, sizeof(struct MsgHeadInfo));
     if (head.totalLen == 0) {
@@ -104,8 +116,8 @@ static void *AsyncMsgHandle(void *arg)
         }
         RegisterAsyncFunc proc = GetAsyncFunc(head->destId);
         if (proc != NULL && head->ackType == NO_ACK) {
-            char *buff1 = head->par1Len == 0 ? NULL : head + 1;
-            char *buff2 = head->par2Len == 0 ? NULL : (void *)(head + 1) + head->par1Len;
+            char *buff1 = (head->par1Len == 0) ? NULL : (void *)(head + 1);
+            char *buff2 = (head->par2Len == 0) ? NULL : (void *)(head + 1) + head->par1Len;
             (void)proc(head->event, buff1, head->par1Len, buff2, head->par2Len);
         } else if (head->ackType == ACK_ERR) {
             /* 如果服务器未找到目标模块，则需要通知退出阻塞的同步发送业务 */
@@ -145,7 +157,7 @@ static void *SyncMsgHandle(void *arg)
         }
         inLen = head->par1Len;
         outLen = head->outLen;
-        buff1 = inLen == 0 ? NULL : head + 1;
+        buff1 = inLen == 0 ? NULL : (void *)(head + 1);
         buff2 = outLen == 0 ? NULL : (void *)(head + 1) + head->par1Len;
         retValue = proc(head->event, buff1, head->par1Len, buff2, head->outLen);
     } while (0);
@@ -176,12 +188,17 @@ static void *NotifyClientRecv(void *UNUSED(arg))
         FD_ZERO(&rfds);
         FD_SET(GetClientSocket(), &rfds);
         int ret = select(GetClientSocket() + 1, &rfds, NULL, NULL, NULL);
+        if (g_recvThreadRun == 0) {
+            NOTIFY_LOG_WARN("recive thread eixt");
+            break;
+        }
         if (ret > 0) {
             struct MsgHeadInfo *head = RecvMsg();
             if (head == NULL) {
                 NOTIFY_LOG_ERROR("read message failed");
                 break;
             }
+            PrintHeadInfo(head, "recive message ");
             if (head->syncType == ASYNC_TYPE) {
                 if (IsThreadPoolInit()) {
                     (void)AddTaskInThreadPool(AsyncMsgHandle, head);
@@ -190,12 +207,16 @@ static void *NotifyClientRecv(void *UNUSED(arg))
                 }
                 continue;
             }
-            if (head->ackType == ACK_MSG) {
+            if (head->msgType == ACK_MSG) {
                 AckMsgHandle(head);
                 continue;
             }
+            NOTIFY_LOG_ERROR("read message head->ackType %d", (int)head->ackType);
             if (IsThreadPoolInit()) {
-                (void)AddTaskInThreadPool(SyncMsgHandle, head);
+                /* 加入线程池出错时需要回应一个ack */
+                if (AddTaskInThreadPool(SyncMsgHandle, head) != 0) {
+                    ReplyMessage(head);
+                }
             } else {
                 (void)SyncMsgHandle(head);
             }
@@ -204,6 +225,8 @@ static void *NotifyClientRecv(void *UNUSED(arg))
             break;
         }
     }
+    g_recvThreadRun = 0;
+    NOTIFY_LOG_ERROR("client recive thread exit");
     return NULL;
 }
 

@@ -16,6 +16,15 @@
 #include "notify_client_recv.h"
 #include "notify_client_ack_list.h"
 
+struct AsyncMsgHead {
+    unsigned int destId;
+    unsigned int event;
+    void *par1;
+    unsigned int par1Len;
+    void *par2;
+    unsigned int par2Len;
+};
+
 static long long g_DestMoudleId[MODULE_ID_MAX]; /* 保存对目标模块发送的序号.long long 防止溢出 */
 static int g_currentMoudleId = 0; /* 同一进程使用第一个注册的moduleid 与server通信 */
 static RegisterAsyncFunc g_asyncFunc[MODULE_ID_MAX] = {NULL};
@@ -61,12 +70,16 @@ unsigned int GetSequenceNum(void)
 
 static int RegisterToServer(NotifyModuleId moduleId)
 {
+    if  (GetClientSocket() < 0) {
+        NOTIFY_LOG_ERROR("socket is not ready");
+        return -1;
+    }
     if (g_currentMoudleId == 0) {
         g_currentMoudleId = moduleId;
     }
     struct SendMsgFrame msg;
-    INIT_SEND_MSG_FRAME(msg, REG_MSG, MODULE_NOTIFY_SERVER, 0,
-                        (void*)&g_currentMoudleId, sizeof(g_currentMoudleId), NULL, 0, -1);
+    INIT_SEND_MSG_FRAME(msg, REG_MSG, MODULE_NOTIFY_SERVER, NOTIFY_REGISTER,
+                        (void*)&g_currentMoudleId, sizeof(g_currentMoudleId), NULL, 0, 0);
     /* 异步 sequence number 紧要 */
     return SendMsgToServer(&msg, g_sequenceNum);
 }
@@ -77,18 +90,13 @@ int RegisterNotifyFunction(NotifyModuleId moduleId, RegisterAsyncFunc asyncFunc,
         NOTIFY_LOG_ERROR("moduleId is invalid %d", moduleId);
         return -1;
     }
-    if (asyncFunc != NULL) {
-        g_asyncFunc[moduleId] = asyncFunc;
-    }
-    if (syncFunc != NULL) {
-        g_syncFunc[moduleId] = syncFunc;
-    }
+    NOTIFY_LOG_INFO("register module %d", moduleId);
+    g_asyncFunc[moduleId] = asyncFunc;
+    g_syncFunc[moduleId] = syncFunc;
     if (RegisterToServer(moduleId) == 0) {
         return 0;
     }
     NOTIFY_LOG_ERROR("register module to server failed");
-    g_asyncFunc[moduleId] = NULL;
-    g_syncFunc[moduleId] = NULL;
     return -1;
 }
 
@@ -101,7 +109,7 @@ RegisterAsyncFunc GetAsyncFunc(NotifyModuleId moduleId)
     return g_asyncFunc[moduleId];
 }
 
-RegisterAsyncFunc GetSyncFunc(NotifyModuleId moduleId)
+RegisterSyncFunc GetSyncFunc(NotifyModuleId moduleId)
 {
     if (IS_MODULEID_INVAILD(moduleId)) {
         NOTIFY_LOG_ERROR("moduleId is invalid %d", moduleId);
@@ -110,14 +118,10 @@ RegisterAsyncFunc GetSyncFunc(NotifyModuleId moduleId)
     return g_syncFunc[moduleId];
 }
 
-void UnregisterNotifyFunction(NotifyModuleId moduleId)
+void UnregisterNotifyFunction(void)
 {
-    if (IS_MODULEID_INVAILD(moduleId)) {
-        NOTIFY_LOG_ERROR("moduleId is invalid %d", moduleId);
-        return;
-    }
-    g_asyncFunc[moduleId] = NULL;
-    g_syncFunc[moduleId] = NULL;
+    /* 发送消息给server注销id */
+    g_currentMoudleId = 0;
 }
 
 static int SendSyncMsg(const struct SendMsgFrame *msg)
@@ -125,7 +129,7 @@ static int SendSyncMsg(const struct SendMsgFrame *msg)
     pthread_mutex_lock(&g_seqNumLock);
     unsigned int seqNum = g_sequenceNum++;
     pthread_mutex_unlock(&g_seqNumLock);
-    int ret = SendMsgToServer(&msg, seqNum);
+    int ret = SendMsgToServer(msg, seqNum);
     pthread_mutex_lock(&g_dateLock);
     int retValue = -1;
     g_DestMoudleId[msg->destId] = seqNum;
@@ -138,6 +142,7 @@ static int SendSyncMsg(const struct SendMsgFrame *msg)
         }
         pthread_cond_wait(&g_dateWait, &g_dateLock);
         if (g_DestMoudleId[msg->destId] == -1) {
+            NOTIFY_LOG_ERROR("can not recive ack from server");
             pthread_mutex_unlock(&g_dateLock);
             break;
         }
@@ -145,7 +150,8 @@ static int SendSyncMsg(const struct SendMsgFrame *msg)
     return retValue;
 }
 
-int SendNotify(NotifyModuleId moduleId, NotifyEvent event, const void *input, int inLen, void *output, int outLen)
+int SendNotify(NotifyModuleId moduleId, NotifyEvent event, const void *input, unsigned int inLen,
+               void *output, unsigned int outLen)
 {
     if (IS_MODULEID_INVAILD(moduleId)) {
         NOTIFY_LOG_ERROR("moduleId is invalid %d", moduleId);
@@ -155,6 +161,10 @@ int SendNotify(NotifyModuleId moduleId, NotifyEvent event, const void *input, in
     RegisterSyncFunc proc = GetSyncFunc(moduleId);
     if (proc != NULL) {
         return proc(event, input, inLen, output, outLen);
+    }
+    if  (GetClientSocket() < 0) {
+        NOTIFY_LOG_ERROR("socket is not ready");
+        return -1;
     }
     struct SendMsgFrame msg;
     INIT_SEND_MSG_FRAME(msg, SNYC_MSG, moduleId, event, input, inLen, output, outLen, 0);
@@ -167,27 +177,27 @@ static unsigned int GetMsgBodyLen(const struct SendMsgFrame *msg, struct MsgHead
     unsigned int bodyLen = 0;
     switch (msg->msgType) {
     case ASNYC_MSG:
-        bodyLen = msg->par1Len + msg->par2Len;
-        head->totalLen = bodyLen;
+        head->totalLen = msg->par1Len + msg->par2Len;
         head->par1Len = msg->par1Len;
         head->par2Len = msg->par2Len;
         break;
     case SNYC_MSG:
-        bodyLen = msg->par1Len + msg->par2Len;
-        head->totalLen = bodyLen;
+        head->totalLen = msg->par1Len + msg->par2Len;
         head->par1Len = msg->par1Len;
         head->outLen = msg->par2Len;
         break;
     case REG_MSG:
-        bodyLen = 0;
+        head->totalLen = msg->par1Len;
+        head->par1Len = msg->par1Len;
         break;
     case ACK_MSG:
-        bodyLen = msg->par2Len;
+        head->totalLen = msg->par2Len;
         head->outLen = msg->par2Len;
         break;
     default:
         break;
     }
+    bodyLen = head->totalLen;
     return bodyLen;
 }
 
@@ -195,17 +205,27 @@ static void PaddingMsgBody(void *buff, const struct SendMsgFrame *msg)
 {
     switch (msg->msgType) {
     case ASNYC_MSG:
-        memcpy(buff, msg->par1, msg->par1Len);
-        memcpy(buff + msg->par1Len, msg->par2, msg->par2Len);
-        break;
     case SNYC_MSG:
-        memcpy(buff, msg->par1, msg->par1Len);
-        memcpy(buff + msg->par1Len, msg->par1, msg->par1Len);
+        if (msg->par1Len != 0 && msg->par1 != NULL) {
+            memcpy(buff, msg->par1, msg->par1Len);
+        } else if (msg->par1Len == 0 && msg->par1 == NULL) {
+
+        } else {
+            NOTIFY_LOG_ERROR("SendMsgFrame is invalid");
+        }
+        if (msg->par2Len != 0 && msg->par2 != NULL) {
+            memcpy(buff + msg->par1Len, msg->par2, msg->par2Len);
+        }
         break;
     case REG_MSG:
+        if (msg->par1Len != 0 && msg->par1 != NULL) {
+            memcpy(buff, msg->par1, msg->par1Len);
+        }
         break;
     case ACK_MSG:
-        memcpy(buff, msg->par2, msg->par2Len);
+        if (msg->par2Len != 0 && msg->par2 != NULL) {
+            memcpy(buff, msg->par2, msg->par2Len);
+        }
         break;
     default:
         break;
@@ -224,18 +244,31 @@ static void PaddingMsgHead(struct MsgHeadInfo *head, const struct SendMsgFrame *
     } else {
         head->ackType = NO_ACK;
     }
-    if (msg->msgType == ASNYC_MSG || (msg->msgType == REG_MSG) {
+    if (msg->msgType == ASNYC_MSG || msg->msgType == REG_MSG) {
         head->syncType = ASYNC_TYPE;
     } else {
         head->syncType = SYNC_TYPE;
     }
 }
 
+int PrintHeadInfo(struct MsgHeadInfo *head, char *buff)
+{
+    if (head == NULL) {
+        NOTIFY_LOG_ERROR("head is NULL");
+        return 0;
+    }
+    NOTIFY_LOG_INFO("%s seqNum %u sourceId %u msgType %u destId %u event %u syncType %u ackType %d totalLen %u par1Len %u par2Len %u outLen %u retValue %d",
+                    buff, head->seqNum, head->sourceId, head->msgType, head->destId,
+                    head->event, head->syncType, (int)head->ackType, head->totalLen,
+                    head->par1Len, head->par2Len, head->outLen, head->retValue);
+    return 0;
+}
+
 int SendMsgToServer(const struct SendMsgFrame *msg, unsigned int seqNum)
 {
     struct MsgHeadInfo head;
     memset((void *)&head, 0, sizeof(head));
-    PaddingMsgHead(msg, &head);
+    PaddingMsgHead(&head, msg);
     head.seqNum = seqNum;
     unsigned int bodyLen = GetMsgBodyLen(msg, &head);
     char *buff = (char *)malloc(sizeof(struct MsgHeadInfo) + bodyLen + 1);
@@ -247,13 +280,15 @@ int SendMsgToServer(const struct SendMsgFrame *msg, unsigned int seqNum)
     unsigned int dataLen = sizeof(struct MsgHeadInfo) + bodyLen;
     unsigned int sendLen = 0;
     pthread_mutex_lock(&g_sendLock);
+    PrintHeadInfo((struct MsgHeadInfo *)buff, "send message ");
     while (dataLen > sendLen) {
-        int retLen = send(GetClientSocket(), buff + sendLen, dataLen - sendLen);
+        int retLen = send(GetClientSocket(), buff + sendLen, dataLen - sendLen, 0);
         if (retLen > 0) {
             sendLen += retLen;
         } else {
             pthread_mutex_unlock(&g_sendLock);
             free(buff);
+            NOTIFY_LOG_ERROR("send data to server failed %d", (int)errno);
             return -1;
         }
     }
@@ -311,8 +346,19 @@ static void *AsyncSendMsgHandle(void *arg)
     return NULL;
 }
 
-int PostNotify(NotifyModuleId moduleId, NotifyEvent event, const void *par1, int par1Len,
-               const void *par2, int par2Len)
+int ReplyMessage(struct MsgHeadInfo *head)
+{
+    if  (GetClientSocket() < 0) {
+        NOTIFY_LOG_ERROR("socket is not ready");
+        return -1;
+    }
+    struct SendMsgFrame msg;
+    INIT_SEND_MSG_FRAME(msg, ACK_MSG, head->sourceId, head->event, NULL, 0, NULL, 0, -1);
+    return SendMsgToServer(&msg, head->seqNum);
+}
+
+int PostNotify(NotifyModuleId moduleId, NotifyEvent event, const void *par1, unsigned int par1Len,
+               const void *par2, unsigned int par2Len)
 {
     if (moduleId >= MODULE_ID_MAX) {
         NOTIFY_LOG_ERROR("moduleId is invalid %d", moduleId);
@@ -331,6 +377,10 @@ int PostNotify(NotifyModuleId moduleId, NotifyEvent event, const void *par1, int
             AsyncSendMsgHandle((void *)head);
         }
         return 0;
+    }
+    if  (GetClientSocket() < 0) {
+        NOTIFY_LOG_ERROR("socket is not ready");
+        return -1;
     }
     struct SendMsgFrame msg;
     INIT_SEND_MSG_FRAME(msg, ASNYC_MSG, moduleId, event, par1, par1Len, par2, par2Len, 0);

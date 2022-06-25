@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <string.h>
 #include <pthread.h>
+#include "notify_client_common.h"
 
 struct NotifyAckList {
     struct NotifyAckNode *head;
@@ -19,6 +20,7 @@ int NotifyAckLisitInit(void)
 {
     g_ackList = (struct NotifyAckList *)malloc(sizeof(struct NotifyAckNode));
     if (g_ackList == NULL) {
+        NOTIFY_LOG_ERROR("g_ackList is NULL");
         return -1;
     }
     g_ackList->head = NULL;
@@ -30,8 +32,10 @@ int NotifyAckLisitInit(void)
 void NotifyAckLisitDestroy(void)
 {
     if (g_ackList == NULL) {
+        NOTIFY_LOG_ERROR("g_ackList is NULL");
         return;
     }
+
     pthread_mutex_lock(&g_ackListLock);
     while (g_ackList->head != NULL) {
         struct NotifyAckNode *temp = g_ackList->head;
@@ -40,6 +44,7 @@ void NotifyAckLisitDestroy(void)
     }
     g_ackList->cnt = 0;
     free(g_ackList);
+    g_ackList = NULL;
     pthread_mutex_unlock(&g_ackListLock);
     pthread_mutex_destroy(&g_ackListLock);
     return;
@@ -72,8 +77,14 @@ struct NotifyAckNode *CreateAckNote(unsigned int seqNum, void *buff, unsigned in
 int InsertNodeInAckList(struct NotifyAckNode *node)
 {
     if (node == NULL) {
+        NOTIFY_LOG_ERROR("node is NULL");
         return -1;
     }
+    if (g_ackList == NULL) {
+        NOTIFY_LOG_ERROR("g_ackList is NULL");
+        return -1;
+    }
+    NOTIFY_LOG_INFO("recive ack seq %d", node->seqNum);
     pthread_mutex_lock(&g_ackListLock);
     if (g_ackList->head == NULL) {
         g_ackList->head = node;
@@ -89,6 +100,10 @@ int InsertNodeInAckList(struct NotifyAckNode *node)
 int IsNodeExistAckList(unsigned int seqNum)
 {
     pthread_mutex_lock(&g_ackListLock);
+    if (g_ackList == NULL) {
+        NOTIFY_LOG_ERROR("g_ackList is NULL");
+        return -1;
+    }
     struct NotifyAckNode *temp = g_ackList->head;
     while (temp != NULL) {
         if (temp->seqNum == seqNum) {
@@ -105,6 +120,10 @@ int IsNodeExistAckList(unsigned int seqNum)
 
 void RemoveNodeFromAckList(unsigned int seqNum)
 {
+    if (g_ackList == NULL) {
+        NOTIFY_LOG_ERROR("g_ackList is NULL");
+        return;
+    }
     pthread_mutex_lock(&g_ackListLock);
     struct NotifyAckNode *node = g_ackList->head;
     if (node == NULL) {
@@ -135,6 +154,10 @@ void RemoveNodeFromAckList(unsigned int seqNum)
 
 void GetDataFromeAckList(unsigned int seqNum, void *buff, unsigned int len, int *retValue)
 {
+    if (g_ackList == NULL) {
+        NOTIFY_LOG_ERROR("g_ackList is NULL");
+        return;
+    }
     pthread_mutex_lock(&g_ackListLock);
     struct NotifyAckNode *temp = g_ackList->head;
     while (temp != NULL) {

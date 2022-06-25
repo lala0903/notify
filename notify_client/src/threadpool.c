@@ -43,7 +43,7 @@ int pthread_cond_signal(pthread_cond_t *cond);
 #define THREAD_LOG_DEBUG(fmt, ...) printf("{threadPool} [DEBUG] <%s() %d> "fmt"\n", __func__, __LINE__, ##__VA_ARGS__)
 
 struct ThreadWork {
-    void (*func)(void *arg);
+    void *(*func)(void *arg);
     void *arg;
     struct ThreadWork *next;
 };
@@ -170,7 +170,7 @@ int InitThreadPool(int maxPoolSize)
     return 0;
 }
 
-int AddTaskInThreadPool(void (*func)(void *arg), void *arg)
+int AddTaskInThreadPool(void *(*func)(void *arg), void *arg)
 {
     if (g_threadRun == 0 || g_threadPool == NULL) {
         THREAD_LOG_ERROR("pool can not run");
