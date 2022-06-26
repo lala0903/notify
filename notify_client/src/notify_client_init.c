@@ -14,12 +14,21 @@
 #include "notify_client_ack_list.h"
 #include "notify_client_send.h"
 #include "notify_client_recv.h"
+#include "notify_client_time.h"
 
 static int g_IsNotifyClientInit = 0;
 static int g_socketFd = -1;
 
 static void CloseClientSocket(void)
 {
+    char path[200] = {0};
+    int ret = snprintf(path, sizeof(path), CLIENT_PATH"%05d", (int)getpid());
+    if(ret < 0) {
+        NOTIFY_LOG_ERROR("snprintf error ret %d", (int)errno);
+        return;
+    } else {
+        unlink(path);
+    }
     close(g_socketFd);
     g_socketFd = -1;
 }
@@ -42,7 +51,8 @@ static int CreateClientSocket(void)
     int ret = snprintf(addr.sun_path, sizeof(addr.sun_path), CLIENT_PATH"%05d", (int)getpid());
     if(ret < 0) {
         NOTIFY_LOG_ERROR("snprintf error ret %d", (int)errno);  
-        CloseClientSocket();
+        close(g_socketFd);
+        g_socketFd = -1;
         return -1;  
     }
     size_t len = offsetof(struct sockaddr_un, sun_path) + strlen(addr.sun_path);
@@ -50,7 +60,6 @@ static int CreateClientSocket(void)
     ret = bind(g_socketFd, (struct sockaddr *)&addr, len);  
     if(ret < 0) {
         NOTIFY_LOG_ERROR("bind faild ret %d", (int)errno);
-        unlink(addr.sun_path);
         CloseClientSocket();
         return -1;
     }
@@ -104,6 +113,10 @@ int NotifyInit(void)
         NOTIFY_LOG_ERROR("Create ack list failed");
         return -1;
     }
+    if (CreateTimeOutListenerThread() < 0) {
+        NOTIFY_LOG_ERROR("Create Time Out Listener failed");
+        return -1;
+    }
     
     NOTIFY_LOG_INFO("init success");  
     g_IsNotifyClientInit = 1;
@@ -116,6 +129,7 @@ void NotifyDestroy(void)
         return;
     }
     UnregisterNotifyFunction();
+    DestoryTimeOutListenThread();
     CloseClientSocket();
     NotifyAckLisitDestroy();
     DestroyThreadPool();

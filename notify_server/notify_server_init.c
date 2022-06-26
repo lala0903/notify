@@ -15,12 +15,10 @@
 #include "notify_server_recv.h"
 #include "notify_server_send.h"
 
-
-
-static int g_IsNotifyServerInit = 0;
 static int g_socketFd = -1;
-static int g_moudleId[MODULE_ID_MAX] = {0};
 static int g_epollFd = -1;
+static int g_IsNotifyServerInit = 0;
+static int g_moudleId[MODULE_ID_MAX] = { 0 };
 
 void CloseServerSocket(void)
 {
@@ -49,7 +47,7 @@ static int CreateServerSocket(void)
     }
     addr.sun_family = AF_UNIX;
     int ret = snprintf(addr.sun_path, sizeof(addr.sun_path), SERVER_PATH);
-    if(ret < 0) {
+    if (ret < 0) {
         NOTIFY_LOG_ERROR("snprintf error ret %d", (int)errno);
         CloseServerSocket();
         return -1;

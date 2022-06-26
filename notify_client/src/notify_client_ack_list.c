@@ -8,6 +8,11 @@
 #include <pthread.h>
 #include "notify_client_common.h"
 
+/*
+ * 创建链表保存server发送过来的同步消息返回值
+ * sennotify函数通过seqNum从链表获取目标模块的返回值
+ */
+
 struct NotifyAckList {
     struct NotifyAckNode *head;
     unsigned int cnt;
@@ -97,7 +102,7 @@ int InsertNodeInAckList(struct NotifyAckNode *node)
     return 0;
 }
 
-int IsNodeExistAckList(unsigned int seqNum)
+int IsSeqNumExistInAckList(unsigned int seqNum)
 {
     pthread_mutex_lock(&g_ackListLock);
     if (g_ackList == NULL) {

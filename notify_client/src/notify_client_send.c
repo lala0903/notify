@@ -45,6 +45,11 @@ void ClearDestModuleIdValue(NotifyModuleId moduleId)
     g_DestMoudleId[moduleId] = -1;
 }
 
+void WakeupDataWaite(void)
+{
+    pthread_cond_broadcast(&g_dateWait);
+}
+
 void DataLock(void)
 {
     pthread_mutex_lock(&g_dateLock);
@@ -53,11 +58,6 @@ void DataLock(void)
 void DataUnlock(void)
 {
     pthread_mutex_unlock(&g_dateLock);
-}
-
-void WakeupDataWaite(void)
-{
-    pthread_cond_broadcast(&g_dateWait);
 }
 
 unsigned int GetSequenceNum(void)
@@ -129,24 +129,41 @@ static int SendSyncMsg(const struct SendMsgFrame *msg)
     pthread_mutex_lock(&g_seqNumLock);
     unsigned int seqNum = g_sequenceNum++;
     pthread_mutex_unlock(&g_seqNumLock);
-    int ret = SendMsgToServer(msg, seqNum);
+    if (IsSeqNumExistInAckList(seqNum) == 0) {
+        RemoveNodeFromAckList(seqNum);
+        NOTIFY_LOG_ERROR("seqNum %u is exist in ack list");
+        return -1;
+    }
+    if (SendMsgToServer(msg, seqNum) < 0) {
+        NOTIFY_LOG_ERROR("seqNum %u send message to server failed", seqNum);
+        return -1;
+    }
+    if (AddSeqNumInTimeoutList(seqNum) < 0) {
+        NOTIFY_LOG_ERROR("seqNum %u insert time out listener failed", seqNum);
+        return -1;
+    }
     pthread_mutex_lock(&g_dateLock);
     int retValue = -1;
     g_DestMoudleId[msg->destId] = seqNum;
     while (1) {
-        if (IsNodeExistAckList(seqNum) == 0) {
+        /* 超时 */
+        if (IsSeqNumTimeOut(seqNum) < 0) {
+            break;
+        }
+        /* 如果没有超时，且存在ack mssage 则说明需要返回了处理结果了 */
+        if (IsSeqNumExistInAckList(seqNum) == 0) {
             GetDataFromeAckList(seqNum, msg->par2, msg->par2Len, &retValue);
             RemoveNodeFromAckList(seqNum);
-            pthread_mutex_unlock(&g_dateLock);
             break;
         }
         pthread_cond_wait(&g_dateWait, &g_dateLock);
         if (g_DestMoudleId[msg->destId] == -1) {
             NOTIFY_LOG_ERROR("can not recive ack from server");
-            pthread_mutex_unlock(&g_dateLock);
             break;
         }
     }
+    ReomveSeqNumFromTimeoutList(seqNum);
+    pthread_mutex_unlock(&g_dateLock);
     return retValue;
 }
 

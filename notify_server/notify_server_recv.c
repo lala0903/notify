@@ -24,7 +24,7 @@ static struct epoll_event g_epollEvent[MODULE_ID_MAX];
 /* 
     read返回0，对方正常调用close关闭链接
     read返回-1，需要通过errno来判断，如果不是EAGAIN和EINTR，那么就是对方异常断开链接
-    两种情况服务端都要close套接字
+    两种情况服务端都要close套接字,并清除注册
 */
 void RemoveClientListen(int clientFd)
 {
@@ -32,6 +32,7 @@ void RemoveClientListen(int clientFd)
         NOTIFY_LOG_ERROR("parameter fd %d invalid", clientFd);
         return;
     }
+    ClearRegisteredClientSocekt(clientFd);
     NOTIFY_LOG_INFO("Remove client fd %d", clientFd);
     if (epoll_ctl(GetEpollFd(), EPOLL_CTL_DEL, clientFd, NULL) < 0) {
         NOTIFY_LOG_ERROR("Remove client fd failed ret %d", (int)errno);
@@ -53,7 +54,7 @@ static int AddClientListen(void)
     temp.data.fd = fd;
     if (epoll_ctl(GetEpollFd(), EPOLL_CTL_ADD, fd, &temp) < 0) {
         NOTIFY_LOG_ERROR("add client fd int epoll event failed ret %d", (int)errno);
-                return -1;
+        return -1;
     }
     return 0;
 }
@@ -168,6 +169,7 @@ static void *NotifyServerRecv(void *arg)
             }
         }
     }
+    g_recvThreadRun = 0;
     return NULL;
 }
 

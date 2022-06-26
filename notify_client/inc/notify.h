@@ -3,6 +3,7 @@
 
 #include "notify_common.h"
 
+/* socket通信用文件，根据实际情况修改 */
 #define SERVER_PATH "/home/lala0903/c_learn/notify_server"
 #define CLIENT_PATH "/home/lala0903/c_learn/notify_client"
 

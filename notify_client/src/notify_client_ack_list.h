@@ -12,7 +12,7 @@ struct NotifyAckNode {
 int NotifyAckLisitInit(void);
 void NotifyAckLisitDestroy(void);
 struct NotifyAckNode *CreateAckNote(unsigned int seqNum, void *buff, unsigned int len, int retValue);
-int IsNodeExistAckList(unsigned int seqNum);
+int IsSeqNumExistInAckList(unsigned int seqNum);
 void RemoveNodeFromAckList(unsigned int seqNum);
 int InsertNodeInAckList(struct NotifyAckNode *node);
 void GetDataFromeAckList(unsigned int seqNum, void *buff, unsigned int len, int *retValue);

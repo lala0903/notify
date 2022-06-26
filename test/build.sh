@@ -3,6 +3,7 @@ MYPATH="/home/lala0903/c_learn/threadpool"
 
 cd ${MYPATH}/notify_client/src
 gcc -shared -fPIC -lpthread -I ../inc *.c -o libnotify.so
+# 解决连接时找不到库的问题
 cp libnotify.so /usr/lib
 rm ./libnotify.so
 cd -

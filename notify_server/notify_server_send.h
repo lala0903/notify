@@ -5,5 +5,6 @@
 
 int InitMessageList(void);
 int AddMessageInList(struct MsgHeadInfo *head, int fd);
+void ClearRegisteredClientSocekt(int clientFd);
 
 #endif // !__NOTIFY_SERVER_SEND_H__

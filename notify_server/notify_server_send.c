@@ -27,8 +27,22 @@ struct MsgList {
 };
 
 struct MsgList *g_MsgList = NULL;
-static int g_MoudleIdSocketFd[MODULE_ID_MAX] = {0}; /* moduleid 对应的 socket fd */
+static int g_MoudleIdSocketFd[MODULE_ID_MAX] = { 0 }; /* moduleid 对应的 socket fd */
 static pthread_mutex_t g_sendLock = PTHREAD_MUTEX_INITIALIZER;
+
+void ClearRegisteredClientSocekt(int clientFd)
+{
+    if (clientFd <= 0) {
+        NOTIFY_LOG_ERROR("input is invalid");
+        return;
+    }
+    for (size_t i = 0; i < sizeof(g_MoudleIdSocketFd) / sizeof(g_MoudleIdSocketFd[0]); i++) {
+        if (g_MoudleIdSocketFd[i] != clientFd) continue;
+        g_MoudleIdSocketFd[i] = -1;
+        NOTIFY_LOG_INFO("clear module [%d] register", (int)i);
+        break;
+    }
+}
 
 int AddMessageInList(struct MsgHeadInfo *head, int fd)
 {
@@ -72,12 +86,16 @@ static int SendMsgToClient(struct MsgHeadInfo *head, int fd)
     unsigned int dataLen = head->totalLen + sizeof(struct MsgHeadInfo);
     unsigned int sendLen = 0;
     pthread_mutex_lock(&g_sendLock);
-    // NOTIFY_LOG_INFO("SendMsgToClient dest id %d fd[%d]", head->destId, fd);
     while (dataLen > sendLen) {
         int retLen = send(fd, buff + sendLen, dataLen - sendLen, 0);
         if (retLen > 0) {
             sendLen += retLen;
         } else {
+            if (errno == EAGAIN || errno == EINTR) {
+                NOTIFY_LOG_WARN("get signal EAGAIN || EINTR %d", (int)errno);
+                continue;
+            }
+            g_MoudleIdSocketFd[head->destId] = -1;
             pthread_mutex_unlock(&g_sendLock);
             NOTIFY_LOG_ERROR("send data to client dest id %d fd[%d] failed %d",
                             head->destId, fd, (int)errno);
@@ -96,7 +114,6 @@ static int RegisterMsgHandle(struct MsgHeadInfo *head, int fd)
     } else if (head->event == NOTIFY_UNREGISTER) {
         NOTIFY_LOG_INFO("unregister module [%d], fd %d", head->sourceId, fd);
         RemoveClientListen(g_MoudleIdSocketFd[head->sourceId]);
-        g_MoudleIdSocketFd[head->sourceId] = -1;
     } else if (head->event == SERVER_WRITE_SEND_TEST) {
         NOTIFY_LOG_INFO("SERVER_WRITE_SEND_TEST fd %d", g_MoudleIdSocketFd[head->sourceId]);
         head->msgType = ACK_MSG;
@@ -158,8 +175,7 @@ static void *ServerMsgHandle(void *arg)
         pthread_mutex_lock(&g_MsgList->queueLock);
         while (g_MsgList->cnt == 0) {
             pthread_cond_wait(&g_MsgList->wait, &g_MsgList->queueLock);
-        }  
-
+        }
         if (g_MsgList->cnt == 0 || g_MsgList->queueHead == NULL) {
             NOTIFY_LOG_ERROR("g_MsgList status error cnt %d", g_MsgList->cnt);
             pthread_mutex_unlock(&g_MsgList->queueLock);

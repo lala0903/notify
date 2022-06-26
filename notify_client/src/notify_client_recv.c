@@ -17,15 +17,23 @@
 #include "notify_client_init.h"
 #include "notify_client_common.h"
 
+/*
+ * 监控socket是否可读，如果可读则先读出协议头，再根据数据长度读出数据
+ * 根据协议头的数据处理对应的异步、同步、应答消息
+ * 异步：根据module id回调对应的函数指针
+ * 同步：根据module id回调对应的函数指针，并将结果组包发送一个ack
+ * 应答：将服务器发送过来的数据插入ack list,并唤醒所有阻塞的sendnotify线程
+ */
+
 #define ONCE_READ_SIZE 1024
 
 static int g_recvThreadRun = 0;
 
 /* 
-    read返回0，对方正常调用close关闭链接
-    read返回-1，需要通过errno来判断，如果不是EAGAIN和EINTR，那么就是对方异常断开链接
-    两种情况服务端都要close套接字
-*/
+ * read返回0，对方正常调用close关闭链接
+ * read返回-1，需要通过errno来判断，如果不是EAGAIN和EINTR，那么就是对方异常断开链接
+ * 两种情况服务端都要close套接字
+ */
 static int RecvMsgFromServer(void *buff, size_t len)
 {
     size_t totalLen = 0;
@@ -211,7 +219,6 @@ static void *NotifyClientRecv(void *UNUSED(arg))
                 AckMsgHandle(head);
                 continue;
             }
-            NOTIFY_LOG_ERROR("read message head->ackType %d", (int)head->ackType);
             if (IsThreadPoolInit()) {
                 /* 加入线程池出错时需要回应一个ack */
                 if (AddTaskInThreadPool(SyncMsgHandle, head) != 0) {

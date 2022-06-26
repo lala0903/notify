@@ -102,7 +102,7 @@ void DestroyThreadPool(void)
     g_threadPool->queueHead = NULL;
     g_threadPool->off = 1;
     pthread_mutex_unlock(&g_threadPool->queueLock);
-    // 唤醒所有线程，马上要退出了
+    /* 唤醒所有线程，马上要退出了 */
     pthread_cond_broadcast(&g_threadPool->wait);
     int index = 0;
     int retry = 0;
@@ -112,7 +112,7 @@ void DestroyThreadPool(void)
             retry = 0;
         } else {
             retry++;
-            usleep(KILL_PRHREAD_RETRY_SLEEP_TIME); // 50ms重试
+            usleep(KILL_PRHREAD_RETRY_SLEEP_TIME); /* 50ms重试 */
             THREAD_LOG_ERROR("pthread_kill tid [%u] faild retry %d", (unsigned int)g_threadPool->threadId[index], retry);
         }
     }
@@ -172,12 +172,12 @@ int InitThreadPool(int maxPoolSize)
 
 int AddTaskInThreadPool(void *(*func)(void *arg), void *arg)
 {
-    if (g_threadRun == 0 || g_threadPool == NULL) {
-        THREAD_LOG_ERROR("pool can not run");
-        return -1;
-    }
     if (func == NULL) {
         THREAD_LOG_ERROR("parameter invaild");
+        return -1;
+    }
+    if (g_threadRun == 0 || g_threadPool == NULL) {
+        THREAD_LOG_ERROR("pool can not run");
         return -1;
     }
     pthread_mutex_lock(&g_threadPool->queueLock);
@@ -187,6 +187,11 @@ int AddTaskInThreadPool(void *(*func)(void *arg), void *arg)
         return -1;
     }
     struct ThreadWork *node = (struct ThreadWork *)malloc(sizeof(struct ThreadWork));
+    if (node == NULL) {
+        THREAD_LOG_ERROR("malloc faild ret %d", (int)errno);
+        pthread_mutex_unlock(&g_threadPool->queueLock);
+        return -1;
+    }
     node->next = NULL;
     node->func = func;
     node->arg = arg;
