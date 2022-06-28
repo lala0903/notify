@@ -15,6 +15,7 @@
 #include "notify_client_ack_list.h"
 #include "notify_client_send.h"
 #include "notify_client_init.h"
+#include "notify_client_time.h"
 #include "notify_client_common.h"
 
 /*
@@ -26,6 +27,7 @@
  */
 
 #define ONCE_READ_SIZE 1024
+#define RETRY_ADDPOOL_TIME_MAX 20
 
 static int g_recvThreadRun = 0;
 
@@ -40,18 +42,20 @@ static int RecvMsgFromServer(void *buff, size_t len)
     while (totalLen < len) {
         size_t readLen = len - totalLen >= ONCE_READ_SIZE ? ONCE_READ_SIZE : len - totalLen;
         ssize_t ret = recv(GetClientSocket(), buff + totalLen, readLen, 0);
-        if (ret < 0) {
+        if (ret > 0) {
+            totalLen += ret;
+        } else if (ret == 0) {
+            CloseClientSocket();
+            NOTIFY_LOG_WARN("read message ret %d", (int)ret);
+            return -1;
+        } else {
             if (errno == EAGAIN || errno == EINTR) {
                 NOTIFY_LOG_WARN("get signal EAGAIN || EINTR %d", (int)errno);
                 continue;
             }
+            CloseClientSocket();
             NOTIFY_LOG_ERROR("read message faild ret %d", (int)errno);
             return -1;
-        } else if (ret == 0) {
-            NOTIFY_LOG_WARN("read message ret %d", (int)ret);
-            return -1;
-        } else {
-            totalLen += ret;
         }
     }
     return totalLen;
@@ -109,17 +113,12 @@ static struct MsgHeadInfo *RecvMsg(void)
 
 static void *AsyncMsgHandle(void *arg)
 {
-    if (arg == NULL) return NULL;
     struct MsgHeadInfo *head = (struct MsgHeadInfo *)arg;
     do {
-        if (IS_MODULEID_INVAILD(head->destId)) {
-            NOTIFY_LOG_ERROR("module id %d is invalid", head->destId);
-            break;
-        }
         if ((head->par1Len > head->totalLen) || (head->par2Len > head->totalLen) ||
             (head->par1Len + head->par2Len != head->totalLen)) {
             NOTIFY_LOG_ERROR("par len is invalid par1Len %u par2Len %u totalLen %u",
-                            head->par1Len, head->par2Len, head->totalLen);
+                             head->par1Len, head->par2Len, head->totalLen);
             break;
         }
         RegisterAsyncFunc proc = GetAsyncFunc(head->destId);
@@ -129,6 +128,7 @@ static void *AsyncMsgHandle(void *arg)
             (void)proc(head->event, buff1, head->par1Len, buff2, head->par2Len);
         } else if (head->ackType == ACK_ERR) {
             /* 如果服务器未找到目标模块，则需要通知退出阻塞的同步发送业务 */
+            NOTIFY_LOG_ERROR("recive server ack error msg, source module id %u", head->sourceId);
             DataLock();
             ClearDestModuleIdValue(head->sourceId);
             WakeupDataWaite();
@@ -148,14 +148,10 @@ static void *SyncMsgHandle(void *arg)
     unsigned int outLen = 0;
     struct MsgHeadInfo *head = (struct MsgHeadInfo *)arg;
     do {
-        if (IS_MODULEID_INVAILD(head->destId)) {
-            NOTIFY_LOG_ERROR("module id %d is invalid", head->destId);
-            break;
-        }
         if ((head->par1Len > head->totalLen) || (head->outLen > head->totalLen) ||
             (head->par1Len + head->outLen != head->totalLen)) {
             NOTIFY_LOG_ERROR("par len is invalid par1Len %u outLen %u totalLen %u",
-                            head->par1Len, head->outLen, head->totalLen);
+                             head->par1Len, head->outLen, head->totalLen);
             break;
         }
         RegisterSyncFunc proc = GetSyncFunc(head->destId);
@@ -179,20 +175,130 @@ static void *SyncMsgHandle(void *arg)
 static void *AckMsgHandle(void *arg)
 {
     struct MsgHeadInfo *head = (struct MsgHeadInfo *)arg;
-    void *buff = head + 1;
-    struct NotifyAckNode *node = CreateAckNote(head->seqNum, buff, head->outLen,
-                                               head->retValue);
+    if (head->totalLen != head->outLen) {
+        NOTIFY_LOG_ERROR("mssage type[%d] or totalLen %u != outLen %u is invalid",
+                         head->msgType, head->totalLen, head->outLen);
+        goto EXIT;
+    }
+    /* 如果ack已经存在或超时监听找不到seq，则丢弃这一包ack */
+    if (IsSeqNumExistInAckList(head->seqNum)) {
+        NOTIFY_LOG_ERROR("head->seqNum %u is exist", head->seqNum);
+        goto EXIT;
+    }
+    if (!IsSeqEXistInTimerlist(head->seqNum)) {
+        NOTIFY_LOG_ERROR("head->seqNum %u is not exist in time list", head->seqNum);
+        goto EXIT;
+    }
+    struct NotifyAckNode *node = CreateAckNote(head);
+    if (node == NULL) {
+        NOTIFY_LOG_ERROR("Create Client ack node faild");
+        goto EXIT;
+    }
     InsertNodeInAckList(node);
+    DataLock();
     WakeupDataWaite();
+    DataUnlock();
+    return NULL;
+EXIT:
     free(head);
     return NULL;
+}
+
+static int ReconnectServer(void)
+{
+    if (ConnectNotifyServer() < 0) {
+        NOTIFY_LOG_ERROR("Create Client Socket failed");
+        return -1;
+    }
+    if (RegisterAgain() < 0) {
+        NOTIFY_LOG_ERROR("register again failed");
+        return -1;
+    }
+    return 0;
+}
+
+static bool IsMsgInvalid(struct MsgHeadInfo *head)
+{
+    if (head->syncType != ASYNC_TYPE && head->syncType != SYNC_TYPE) {
+        NOTIFY_LOG_ERROR("message sync type[%d] is invalid", head->syncType);
+        return true;
+    }
+    /* 不允许出现通过服务器发送给自己的消息 */
+    if (head->destId == head->sourceId) {
+        NOTIFY_LOG_ERROR("module id %d is invalid", head->destId);
+        return true;
+    }
+    if (IS_MODULEID_INVAILD(head->destId)) {
+        NOTIFY_LOG_ERROR("module id %d is invalid", head->destId);
+        return true;
+    }
+    return false;
+}
+
+static int ReciveMsgHandle(void)
+{
+    int i;
+    struct MsgHeadInfo *head = RecvMsg();
+    if (head == NULL) {
+        NOTIFY_LOG_ERROR("read message failed");
+        return -1;
+    }
+    PrintHeadInfo(head, "recive message ");
+    if (IsMsgInvalid(head)) {
+        free(head);
+        return -1;
+    }
+    if (head->syncType == ASYNC_TYPE) {
+        if (head->msgType != ASNYC_MSG) {
+            NOTIFY_LOG_ERROR("message async type[%d] is invalid msgtype %d", head->syncType, head->msgType);
+            free(head);
+            return -1;
+        }
+        if (IsThreadPoolInit()) {
+            (void)AddTaskInThreadPool(AsyncMsgHandle, head);
+        } else {
+            (void)AsyncMsgHandle(head);
+        }
+        return 0;
+    }
+    if (head->msgType == ACK_MSG) {
+        AckMsgHandle(head);
+        return 0;
+    }
+    if (head->msgType != SNYC_MSG) {
+        NOTIFY_LOG_ERROR("message sync type[%d] is invalid msgtype %d", head->syncType, head->msgType);
+        free(head);
+        return -1;
+    }
+    if (IsThreadPoolInit()) {
+        for (i = 0; i < RETRY_ADDPOOL_TIME_MAX; i++) {
+            if (AddTaskInThreadPool(SyncMsgHandle, head) == 0) break;
+        }
+         /* 加入线程池出错时需要回应一个ack */
+        if (i == RETRY_ADDPOOL_TIME_MAX) {
+            ReplyMessage(head);
+            return -1;
+        }
+    } else {
+        (void)SyncMsgHandle(head);
+    }
+    return 0;
 }
 
 static void *NotifyClientRecv(void *UNUSED(arg))
 {
     fd_set rfds;
+    int retTryCnt = 0;
     while (g_recvThreadRun == 1) {
-        if (GetClientSocket() < 0) break;
+        if (GetClientSocket() < 0) {
+            NOTIFY_LOG_WARN("disconnect from server and try to reconnect time %d", retTryCnt);
+            if (ReconnectServer() < 0) {
+                retTryCnt++;
+                sleep(1); /* 休眠一秒再从重连服务器 */
+                continue;
+            }
+            retTryCnt = 0;
+        }
         FD_ZERO(&rfds);
         FD_SET(GetClientSocket(), &rfds);
         int ret = select(GetClientSocket() + 1, &rfds, NULL, NULL, NULL);
@@ -201,44 +307,20 @@ static void *NotifyClientRecv(void *UNUSED(arg))
             break;
         }
         if (ret > 0) {
-            struct MsgHeadInfo *head = RecvMsg();
-            if (head == NULL) {
-                NOTIFY_LOG_ERROR("read message failed");
-                break;
-            }
-            PrintHeadInfo(head, "recive message ");
-            if (head->syncType == ASYNC_TYPE) {
-                if (IsThreadPoolInit()) {
-                    (void)AddTaskInThreadPool(AsyncMsgHandle, head);
-                } else {
-                    (void)AsyncMsgHandle(head);
-                }
-                continue;
-            }
-            if (head->msgType == ACK_MSG) {
-                AckMsgHandle(head);
-                continue;
-            }
-            if (IsThreadPoolInit()) {
-                /* 加入线程池出错时需要回应一个ack */
-                if (AddTaskInThreadPool(SyncMsgHandle, head) != 0) {
-                    ReplyMessage(head);
-                }
-            } else {
-                (void)SyncMsgHandle(head);
-            }
+            ReciveMsgHandle();
         } else {
             NOTIFY_LOG_ERROR("select failed ret = %d", (int)errno);
-            break;
         }
     }
-    g_recvThreadRun = 0;
-    NOTIFY_LOG_ERROR("client recive thread exit");
     return NULL;
 }
 
 int CreateRecvThread(void)
 {
+    if (g_recvThreadRun == 1) {
+        NOTIFY_LOG_WARN("recive thread is exist");
+        return -1;
+    }
     pthread_t tid;
     g_recvThreadRun = 1;
     if (pthread_create(&tid, NULL, (void *)NotifyClientRecv, NULL) != 0) {

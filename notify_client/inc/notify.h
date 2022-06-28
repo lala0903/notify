@@ -7,17 +7,18 @@
 #define SERVER_PATH "/home/lala0903/c_learn/notify_server"
 #define CLIENT_PATH "/home/lala0903/c_learn/notify_client"
 
-#define SYNC_TYPE 0
-#define ASYNC_TYPE 1
+#define ASYNC_TYPE 0
+#define SYNC_TYPE 1
 
-typedef enum{
+/* 异步消息和注册消息属于异步类型，同步消息和应答消息属于同步类型 */
+typedef enum {
     ASNYC_MSG,
     SNYC_MSG,
     REG_MSG,
     ACK_MSG,
 } NotifyMsgType;
 
-typedef enum{
+typedef enum {
     NO_ACK,
     ACK_OK,
     ACK_ERR,

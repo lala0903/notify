@@ -35,6 +35,8 @@ void DataLock(void);
 void DataUnlock(void);
 void ClearDestModuleIdValue(NotifyModuleId moduleId);
 int ReplyMessage(struct MsgHeadInfo *head);
-void UnregisterNotifyFunction(void);
+void UnregisterNotifyModule(void);
 int PrintHeadInfo(struct MsgHeadInfo *head, char *buff);
+int RegisterAgain(void);
+
 #endif // !__NOTIFY_CLIENT_SEND_H__

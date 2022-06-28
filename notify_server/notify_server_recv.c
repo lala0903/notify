@@ -28,7 +28,7 @@ static struct epoll_event g_epollEvent[MODULE_ID_MAX];
 */
 void RemoveClientListen(int clientFd)
 {
-    if (clientFd < 0) {
+    if (clientFd <= 0) {
         NOTIFY_LOG_ERROR("parameter fd %d invalid", clientFd);
         return;
     }
@@ -65,20 +65,20 @@ static int RecvMsgFromClient(int fd, void *buff, size_t len)
     while (totalLen < len) {
         size_t readLen = len - totalLen >= ONCE_READ_SIZE ? ONCE_READ_SIZE : len - totalLen;
         ssize_t ret = read(fd, buff + totalLen, readLen);
-        if (ret < 0) {
+        if (ret > 0) {
+            totalLen += ret;
+        } else if (ret == 0) {
+            NOTIFY_LOG_WARN("clint is disconnect");
+            RemoveClientListen(fd);
+            return -1;
+        } else {
             if (errno == EAGAIN || errno == EINTR) {
                 NOTIFY_LOG_WARN("get signal EAGAIN || EINTR %d", (int)errno);
                 continue;
             }
-            NOTIFY_LOG_ERROR("read message faild ret %d", (int)errno);
+            NOTIFY_LOG_ERROR("clint is disconnect ret %d", (int)errno);
             RemoveClientListen(fd);
             return -1;
-        } else if (ret == 0) {
-            NOTIFY_LOG_WARN("read message ret = 0");
-            RemoveClientListen(fd);
-            return totalLen;
-        } else {
-            totalLen += ret;
         }
     }
     return totalLen;
@@ -109,7 +109,6 @@ static struct MsgHeadInfo *RecvMsg(int fd)
     struct MsgHeadInfo head;
     memset((void *)&head, 0, sizeof(struct MsgHeadInfo));
     if (RecvMsgHead(fd, &head) != 0) {
-        NOTIFY_LOG_ERROR("read msg head failed");
         return NULL;
     }
     unsigned int bodyLen = head.totalLen;
@@ -124,7 +123,6 @@ static struct MsgHeadInfo *RecvMsg(int fd)
     }
     memcpy((void *)buff, (void *)&head, sizeof(struct MsgHeadInfo));
     if (bodyLen == 0) {
-        NOTIFY_LOG_ERROR("bodyLen == 0");
         return (struct MsgHeadInfo *)buff;
     }
     if (RecvMsgBody(fd, buff, (size_t)bodyLen) != 0) {
@@ -139,6 +137,7 @@ static int ReadDataFromClientHandle(int fd)
 {
     struct MsgHeadInfo *buff = RecvMsg(fd);
     if (buff == NULL) {
+        NOTIFY_LOG_ERROR("recive msg from clientFd[%d] error", fd);
         return -1;
     }
     return AddMessageInList(buff, fd);
@@ -153,6 +152,10 @@ static void *NotifyServerRecv(void *arg)
         int readyCnt = epoll_wait(GetEpollFd(), g_epollEvent, eventSize, -1); /* 阻塞监听 */
         if (readyCnt < 0) {
             NOTIFY_LOG_ERROR("epoll_wait faild ret %d", (int)errno);
+            break;
+        }
+        if (g_recvThreadRun == 0) {
+            NOTIFY_LOG_WARN("recive thread eixt");
             break;
         }
         for (int i = 0; i < readyCnt; i++) {
@@ -175,6 +178,10 @@ static void *NotifyServerRecv(void *arg)
 
 int CreateRecvThread(void)
 {
+    if (g_recvThreadRun == 1) {
+        NOTIFY_LOG_WARN("recive thread is exist");
+        return -1;
+    }
     pthread_t tid;
     g_recvThreadRun = 1;
     if (pthread_create(&tid, NULL, (void *)NotifyServerRecv, NULL) != 0) {
@@ -183,4 +190,9 @@ int CreateRecvThread(void)
         return -1;
     }
     return 0;
+}
+
+void DestoryRecvThread(void)
+{
+    g_recvThreadRun = 0;
 }

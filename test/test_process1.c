@@ -20,7 +20,7 @@ struct asyncMsg {
 
 int test1event1SyncFunc(const void *input, unsigned int inLen, void *output, unsigned int outLen)
 {
-    char *temp = "send sync test";
+    char *temp = "this event1 send sync test";
     printf("test1 event test1 sync msg\n");
     if (input != NULL) {
         printf("%s\n", (char *)input);
@@ -35,7 +35,7 @@ int test1event1SyncFunc(const void *input, unsigned int inLen, void *output, uns
 
 int test1event2SyncFunc(const void *input, unsigned int inLen, void *output, unsigned int outLen)
 {
-    char *temp = "this test2 sync func";
+    char *temp = "this event2 sync func";
     printf("test1 event test2 sync msg\n");
     if (input != NULL) {
         printf("%s\n", (char *)input);

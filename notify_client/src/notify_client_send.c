@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
+#include <stdbool.h>
 #include <pthread.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -12,6 +13,7 @@
 #include <sys/types.h>
 #include "threadpool.h"
 #include "notify_client_init.h"
+#include "notify_client_time.h"
 #include "notify_client_common.h"
 #include "notify_client_recv.h"
 #include "notify_client_ack_list.h"
@@ -25,10 +27,11 @@ struct AsyncMsgHead {
     unsigned int par2Len;
 };
 
-static long long g_DestMoudleId[MODULE_ID_MAX]; /* 保存对目标模块发送的序号.long long 防止溢出 */
+static long long g_DestMoudleId[MODULE_ID_MAX] = { 0 }; /* 保存对目标模块发送的序号.long long 防止溢出 */
+static int g_registedMoudleId[MODULE_ID_MAX] = { 0 }; /* 保存对目标模块发送的序号.long long 防止溢出 */
 static int g_currentMoudleId = 0; /* 同一进程使用第一个注册的moduleid 与server通信 */
-static RegisterAsyncFunc g_asyncFunc[MODULE_ID_MAX] = {NULL};
-static RegisterSyncFunc g_syncFunc[MODULE_ID_MAX] = {NULL};
+static RegisterAsyncFunc g_asyncFunc[MODULE_ID_MAX] = { NULL };
+static RegisterSyncFunc g_syncFunc[MODULE_ID_MAX] = { NULL };
 static unsigned int g_sequenceNum = 0; //同步消息用于接收数据，异步无用
 
 static pthread_mutex_t g_seqNumLock = PTHREAD_MUTEX_INITIALIZER;
@@ -74,18 +77,43 @@ static int RegisterToServer(NotifyModuleId moduleId)
         NOTIFY_LOG_ERROR("socket is not ready");
         return -1;
     }
-    if (g_currentMoudleId == 0) {
+    /*
+     * 进程多模块时使用第一次注册的id作为进程id
+     * 因为同步notify的ack使用seqNum来确认消息属于哪个模块，与module无关
+     * 所以同进程不同模块发送同步消息统一使用g_currentMoudleId作为source id
+     */
+    if (g_currentMoudleId <= 0) {
         g_currentMoudleId = moduleId;
     }
+    g_registedMoudleId[moduleId] = 1;
     struct SendMsgFrame msg;
     INIT_SEND_MSG_FRAME(msg, REG_MSG, MODULE_NOTIFY_SERVER, NOTIFY_REGISTER,
-                        (void*)&g_currentMoudleId, sizeof(g_currentMoudleId), NULL, 0, 0);
+                        (void*)&moduleId, sizeof(moduleId), NULL, 0, 0);
     /* 异步 sequence number 紧要 */
     return SendMsgToServer(&msg, g_sequenceNum);
 }
 
+/* 用于服务器突然断联尝试重新向服务器注册自己 */
+int RegisterAgain(void)
+{
+    if (g_currentMoudleId <= 0) {
+        NOTIFY_LOG_ERROR("currentMoudleId is invaild");
+        return -1;
+    }
+    for (int i = 0; i < MODULE_ID_MAX; i++) {
+        /* 服务器允许重复注册同一个module，服务器只是建立module与socketfd的映射关系 */
+        if (g_registedMoudleId[i] <= 0) continue;
+        if (RegisterToServer(g_registedMoudleId[i]) < 0) return -1;
+    }
+    return 0;
+}
+
 int RegisterNotifyFunction(NotifyModuleId moduleId, RegisterAsyncFunc asyncFunc, RegisterSyncFunc syncFunc)
 {
+    if (!IsNOtifyInit()) {
+        NOTIFY_LOG_ERROR("notify is not init");
+        return -1;
+    }
     if (IS_MODULEID_INVAILD(moduleId)) {
         NOTIFY_LOG_ERROR("moduleId is invalid %d", moduleId);
         return -1;
@@ -118,60 +146,77 @@ RegisterSyncFunc GetSyncFunc(NotifyModuleId moduleId)
     return g_syncFunc[moduleId];
 }
 
-void UnregisterNotifyFunction(void)
+/* 暂时没想好这么处理单个注销的情况 */
+void UnregisterNotifyModule(void)
 {
+    if (g_currentMoudleId <= 0) {
+        NOTIFY_LOG_ERROR("module is unregister");
+        return;
+    }
     /* 发送消息给server注销id */
+    (void)SendNotify(MODULE_NOTIFY_SERVER, NOTIFY_UNREGISTER, (void *)&g_currentMoudleId, sizeof(g_currentMoudleId), NULL, 0);
     g_currentMoudleId = 0;
+    for (int i = MODULE_NOTIFY_SERVER; i < MODULE_ID_MAX; i++) {
+        ClearDestModuleIdValue(i);
+    }
 }
 
-static int SendSyncMsg(const struct SendMsgFrame *msg)
+static long SendSyncMsg(const struct SendMsgFrame *msg, unsigned int seqNum)
 {
-    pthread_mutex_lock(&g_seqNumLock);
-    unsigned int seqNum = g_sequenceNum++;
-    pthread_mutex_unlock(&g_seqNumLock);
-    if (IsSeqNumExistInAckList(seqNum) == 0) {
-        RemoveNodeFromAckList(seqNum);
-        NOTIFY_LOG_ERROR("seqNum %u is exist in ack list");
+    if (IsSeqNumExistInAckList(seqNum)) {
+        ReleaseAckNode(RemoveNodeFromAckList(seqNum));
+        NOTIFY_LOG_ERROR("seqNum %u is exist in ack list", seqNum);
+        return -1;
+    }
+    if (AddSeqNumInTimeoutList(seqNum) < 0) {
+        ReomveSeqNumFromTimeoutList(seqNum);
+        NOTIFY_LOG_ERROR("seqNum %u insert time out listener failed", seqNum);
         return -1;
     }
     if (SendMsgToServer(msg, seqNum) < 0) {
         NOTIFY_LOG_ERROR("seqNum %u send message to server failed", seqNum);
         return -1;
     }
-    if (AddSeqNumInTimeoutList(seqNum) < 0) {
-        NOTIFY_LOG_ERROR("seqNum %u insert time out listener failed", seqNum);
-        return -1;
-    }
     pthread_mutex_lock(&g_dateLock);
-    int retValue = -1;
     g_DestMoudleId[msg->destId] = seqNum;
     while (1) {
-        /* 超时 */
-        if (IsSeqNumTimeOut(seqNum) < 0) {
-            break;
-        }
-        /* 如果没有超时，且存在ack mssage 则说明需要返回了处理结果了 */
-        if (IsSeqNumExistInAckList(seqNum) == 0) {
-            GetDataFromeAckList(seqNum, msg->par2, msg->par2Len, &retValue);
-            RemoveNodeFromAckList(seqNum);
+        /* 存在ack mssage 则说明需要返回了处理结果了, 或者超时 */
+        if (IsSeqNumExistInAckList(seqNum) || IsSeqNumTimeOut(seqNum)) {
+            ReomveSeqNumFromTimeoutList(seqNum);
             break;
         }
         pthread_cond_wait(&g_dateWait, &g_dateLock);
         if (g_DestMoudleId[msg->destId] == -1) {
-            NOTIFY_LOG_ERROR("can not recive ack from server");
+            NOTIFY_LOG_ERROR("can not recive ack from dest module[%d]", msg->destId);
             break;
         }
     }
-    ReomveSeqNumFromTimeoutList(seqNum);
     pthread_mutex_unlock(&g_dateLock);
-    return retValue;
+    return 0;
+}
+
+bool IsNotifyParameterValid(const void *par1, unsigned int par1Len, const void *par2, unsigned int par2Len)
+{
+    if (par1 == NULL && par1Len != 0) return false;
+    if (par1 != NULL && par1Len == 0) return false;
+    if (par2 == NULL && par2Len != 0) return false;
+    if (par2 != NULL && par2Len == 0) return false;
+    return true;
 }
 
 int SendNotify(NotifyModuleId moduleId, NotifyEvent event, const void *input, unsigned int inLen,
                void *output, unsigned int outLen)
 {
+    if (!IsNOtifyInit()) {
+        NOTIFY_LOG_ERROR("notify is not init");
+        return -1;
+    }
     if (IS_MODULEID_INVAILD(moduleId)) {
         NOTIFY_LOG_ERROR("moduleId is invalid %d", moduleId);
+        return -1;
+    }
+    if (!IsNotifyParameterValid(input, inLen, output, outLen)) {
+        NOTIFY_LOG_ERROR("para invalid input %p inLen %u output %p outlen %u", input, inLen, output, outLen);
         return -1;
     }
     /* 同进程回调 */
@@ -179,13 +224,29 @@ int SendNotify(NotifyModuleId moduleId, NotifyEvent event, const void *input, un
     if (proc != NULL) {
         return proc(event, input, inLen, output, outLen);
     }
-    if  (GetClientSocket() < 0) {
+    if (GetClientSocket() < 0) {
         NOTIFY_LOG_ERROR("socket is not ready");
         return -1;
     }
+    pthread_mutex_lock(&g_seqNumLock);
+    unsigned int seqNum = g_sequenceNum++;
+    pthread_mutex_unlock(&g_seqNumLock);
     struct SendMsgFrame msg;
     INIT_SEND_MSG_FRAME(msg, SNYC_MSG, moduleId, event, input, inLen, output, outLen, 0);
-    return SendSyncMsg(&msg);
+    if (SendSyncMsg(&msg, seqNum) < 0) {
+        return -1;
+    }
+    struct NotifyAckNode *node = RemoveNodeFromAckList(seqNum);
+    if (node == NULL) {
+        return -1;
+    }
+    int retValue = -1;
+    if (node->head != NULL && outLen != 0 && outLen == node->head->outLen) {
+        memcpy(output, (void *)(node->head + 1), outLen);
+        retValue = node->head->retValue;
+    }
+    ReleaseAckNode(node);
+    return retValue;
 }
 
 // 处理返回值
@@ -274,10 +335,10 @@ int PrintHeadInfo(struct MsgHeadInfo *head, char *buff)
         NOTIFY_LOG_ERROR("head is NULL");
         return 0;
     }
-    NOTIFY_LOG_INFO("%s seqNum %u sourceId %u msgType %u destId %u event %u syncType %u ackType %d totalLen %u par1Len %u par2Len %u outLen %u retValue %d",
-                    buff, head->seqNum, head->sourceId, head->msgType, head->destId,
-                    head->event, head->syncType, (int)head->ackType, head->totalLen,
-                    head->par1Len, head->par2Len, head->outLen, head->retValue);
+    NOTIFY_LOG_INFO("%s sourceId %u destId %u event %u seqNum %u msgType %u syncType %u ackType %d totalLen %u par1Len %u par2Len %u outLen %u",
+                    buff, head->sourceId, head->destId, head->event, head->seqNum,
+                    head->msgType, head->syncType, (int)head->ackType, head->totalLen,
+                    head->par1Len, head->par2Len, head->outLen);
     return 0;
 }
 
@@ -377,8 +438,16 @@ int ReplyMessage(struct MsgHeadInfo *head)
 int PostNotify(NotifyModuleId moduleId, NotifyEvent event, const void *par1, unsigned int par1Len,
                const void *par2, unsigned int par2Len)
 {
+    if (!IsNOtifyInit()) {
+        NOTIFY_LOG_ERROR("notify is not init");
+        return -1;
+    }
     if (moduleId >= MODULE_ID_MAX) {
         NOTIFY_LOG_ERROR("moduleId is invalid %d", moduleId);
+        return -1;
+    }
+    if (!IsNotifyParameterValid(par1, par1Len, par2, par2Len)) {
+        NOTIFY_LOG_ERROR("para invalid par1 %p par1Len %u par2 %p par2Len %u", par1, par1Len, par2, par2Len);
         return -1;
     }
     /* 同进程回调 */

@@ -1,19 +1,21 @@
 #ifndef __NOTIFY_CLIENT_ACK_LIST_H__
 #define __NOTIFY_CLIENT_ACK_LIST_H__
 
+#include <stdbool.h>
+#include "notify.h"
+
 struct NotifyAckNode {
     unsigned int seqNum;
-    int retValue;
-    void *buff;
-    unsigned int len;
+    struct MsgHeadInfo *head;
     struct NotifyAckNode *next;
 };
 
 int NotifyAckLisitInit(void);
 void NotifyAckLisitDestroy(void);
-struct NotifyAckNode *CreateAckNote(unsigned int seqNum, void *buff, unsigned int len, int retValue);
-int IsSeqNumExistInAckList(unsigned int seqNum);
-void RemoveNodeFromAckList(unsigned int seqNum);
+struct NotifyAckNode *CreateAckNote(struct MsgHeadInfo *head);
+bool IsSeqNumExistInAckList(unsigned int seqNum);
 int InsertNodeInAckList(struct NotifyAckNode *node);
-void GetDataFromeAckList(unsigned int seqNum, void *buff, unsigned int len, int *retValue);
+struct NotifyAckNode *RemoveNodeFromAckList(unsigned int seqNum);
+void ReleaseAckNode(struct NotifyAckNode *node);
+
 #endif // !__NOTIFY_CLIENT_INIT_H__

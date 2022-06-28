@@ -115,13 +115,13 @@ int main(void)
     printf("start test2 \n");
     while (1) {
         fgets(temp, sizeof(temp), stdin); //敲回车触发
-        SendNotify(MODULE_TEST1, MODULE_TEST1_EVENT1, send, strlen(send), recv, sizeof(recv));
+        SendNotify(MODULE_TEST1, MODULE_TEST1_EVENT1, send, strlen(send) + 1, recv, sizeof(recv));
         PostNotify(MODULE_TEST1, MODULE_TEST1_EVENT2, recv, sizeof(recv), send, sizeof(send));
         printf("read data from module1, %s\n", recv);
         fgets(temp, sizeof(temp), stdin); //敲回车触发
             printf("send %s to module2 event2\n", recv);
         SendNotify(MODULE_TEST1, MODULE_TEST1_EVENT2, send, sizeof(send), recv, sizeof(recv));
-        PostNotify(MODULE_TEST1, MODULE_TEST1_EVENT1, recv, strlen(recv), send, strlen(send));
+        PostNotify(MODULE_TEST1, MODULE_TEST1_EVENT1, recv, strlen(recv) + 1, send, strlen(send) + 1);
         printf("read data from module1, %s\n", recv);
     }
     return 0;

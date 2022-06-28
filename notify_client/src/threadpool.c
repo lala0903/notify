@@ -80,7 +80,6 @@ static void *ProcessProgram(void *UNUSED(arg))
         free(work);
         work = NULL;
     }
-    // THREAD_LOG_INFO("task [%u] exit", (unsigend int)pthread_self());
     return NULL;
 }
 
